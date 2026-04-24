@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Membership Cost Calculator</title>
+    
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- React & ReactDOM (UMD versions for browser) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Lucide React Icons (UMD version) -->
+    <script src="https://unpkg.com/lucide-react@0.294.0/dist/umd/lucide-react.min.js"></script>
+    
+    <!-- Babel for compiling JSX in the browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        /* Custom scrollbar to match the neat aesthetic */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900 font-sans">
+    
+    <!-- This is where the React app will inject itself -->
+    <div id="root"></div>
+
+    <!-- Application Code -->
+    <script type="text/babel">
+        // Extract hooks from global React object
+        const { useState, useMemo, useRef } = React;
+        
+        // Extract icons from global LucideReact object
+        const { 
+          Users, Home, CreditCard, TrendingUp, Clock, DollarSign, Info,
+          Calendar, Zap, Target, Trophy, Stethoscope, Settings,
+          Calculator, User, Plus, Trash2, UserCircle, ArrowDown,
+          Download, Upload
+        } = window.LucideReact;
+
+        // --- CONSTANTS ---
+        const CATEGORY_MAP = {
+          res: 'booking',
+          res_op: 'booking',
+          op: 'op',
+          op_op: 'op',
+          league: 'league',
+          tournament: 'tournament',
+          clinics: 'clinic',
+        };
+
+        const HOURS_MAP = {
+          res: 1,
+          res_op: 1,
+          op: 2,
+          op_op: 2,
+          league: 3,
+          tournament: 3,
+          clinics: 1,
+        };
+
+        const IS_COURT_BASED = {
+          res: true,
+          res_op: true,
+          op: false,
+          op_op: false,
+          league: false,
+          tournament: false,
+          clinics: false,
+        };
+
+        const INITIAL_MEMBERSHIPS = {
+          no_membership: {
+            name: "Non-member",
+            fees: 0,
+            prices: { res: 36, res_op: 24, op: 20, op_op: 15, league: 30, tournament: 40, clinics: 35 },
+            passes: { booking: 0, op: 0, league: 0, tournament: 0, clinic: 0 }
+          },
+          basic: {
+            name: "Basic",
+            fees: 9,
+            prices: { res: 29, res_op: 17, op: 20, op_op: 15, league: 30, tournament: 40, clinics: 35 },
+            passes: { booking: 0, op: 0, league: 0, tournament: 0, clinic: 0 }
+          },
+          home: {
+            name: "Home",
+            fees: 80,
+            prices: { res: 18, res_op: 12, op: 15, op_op: 10, league: 20, tournament: 40, clinics: 35 },
+            passes: { booking: 0, op: 4, league: 0, tournament: 0, clinic: 0 }
+          }
+        };
+
+        const ACTIVITY_LABELS = {
+          res: { label: "Peak Reservation", icon: <Zap className="text-orange-500 w-4 h-4" /> },
+          res_op: { label: "Off-Peak Reservation", icon: <Clock className="text-blue-500 w-4 h-4" /> },
+          op: { label: "Peak Open-Play", icon: <Target className="text-red-500 w-4 h-4" /> },
+          op_op: { label: "Off-Peak Open-Play", icon: <Calendar className="text-green-500 w-4 h-4" /> },
+          league: { label: "Leagues", icon: <Trophy className="text-yellow-500 w-4 h-4" /> },
+          tournament: { label: "Tournaments", icon: <Trophy className="text-purple-500 w-4 h-4" /> },
+          clinics: { label: "Clinics", icon: <Stethoscope className="text-teal-500 w-4 h-4" /> }
+        };
+
+        const INITIAL_PERSONAS = [
+          {
+            id: 'p1',
+            name: 'Casual Player',
+            behavior: { res: 1, res_op: 2, op: 1, op_op: 1, league: 0, tournament: 0, clinics: 0 }
+          },
+          {
+            id: 'p2',
+            name: 'The Competitor',
+            behavior: { res: 4, res_op: 2, op: 4, op_op: 2, league: 2, tournament: 1, clinics: 0 }
+          },
+          {
+            id: 'p3',
+            name: 'Morning Regular',
+            behavior: { res: 0, res_op: 8, op: 0, op_op: 4, league: 0, tournament: 0, clinics: 1 }
+          }
+        ];
+
+        const PASS_CATEGORIES = [
+          { key: 'booking', label: 'Off-Peak Booking' },
+          { key: 'op', label: 'Open Play (Any)' },
+          { key: 'league', label: 'League' },
+          { key: 'tournament', label: 'Tournament' },
+          { key: 'clinic', label: 'Clinic' }
+        ];
+
+        const App = () => {
+          const [activeTab, setActiveTab] = useState('calc'); 
+          const [pricingMode, setPricingMode] = useState('dollar'); // 'dollar' or 'percent'
+          const [memberships, setMemberships] = useState(INITIAL_MEMBERSHIPS);
+          const [personas, setPersonas] = useState(INITIAL_PERSONAS);
+          const [selectedPersonaId, setSelectedPersonaId] = useState(INITIAL_PERSONAS[0].id);
+          const [behavior, setBehavior] = useState(INITIAL_PERSONAS[0].behavior);
+          const fileInputRef = useRef(null);
+
+          const getIcon = (id) => {
+            if (id === 'no_membership') return <Users className="w-5 h-5" />;
+            if (id === 'basic') return <CreditCard className="w-5 h-5" />;
+            if (id === 'home') return <Home className="w-5 h-5" />;
+            return <CreditCard className="w-5 h-5" />;
+          };
+
+          const handleBehaviorChange = (key, val) => {
+            const value = Math.max(0, parseInt(val) || 0);
+            setBehavior(prev => ({ ...prev, [key]: value }));
+          };
+
+          const loadPersona = (id) => {
+            const persona = personas.find(p => p.id === id);
+            if (persona) {
+              setSelectedPersonaId(id);
+              setBehavior({ ...persona.behavior });
+            }
+          };
+
+          const handlePersonaBehaviorChange = (personaId, activityKey, val) => {
+            const value = Math.max(0, parseInt(val) || 0);
+            setPersonas(prev => prev.map(p => 
+              p.id === personaId 
+                ? { ...p, behavior: { ...p.behavior, [activityKey]: value } }
+                : p
+            ));
+            if (selectedPersonaId === personaId) {
+              setBehavior(prev => ({ ...prev, [activityKey]: value }));
+            }
+          };
+
+          const addPersona = () => {
+            const newId = `p-${Date.now()}`;
+            const newPersona = {
+              id: newId,
+              name: `New Persona ${personas.length + 1}`,
+              behavior: { res: 0, res_op: 0, op: 0, op_op: 0, league: 0, tournament: 0, clinics: 0 }
+            };
+            setPersonas([...personas, newPersona]);
+          };
+
+          const removePersona = (id) => {
+            if (personas.length <= 1) return;
+            setPersonas(personas.filter(p => p.id !== id));
+            if (selectedPersonaId === id) {
+              loadPersona(personas[0].id);
+            }
+          };
+
+          const updatePersonaName = (id, newName) => {
+            setPersonas(prev => prev.map(p => p.id === id ? { ...p, name: newName } : p));
+          };
+
+          const handlePriceChange = (membershipKey, activityKey, val) => {
+            const value = Math.max(0, parseFloat(val) || 0);
+            setMemberships(prev => ({
+              ...prev,
+              [membershipKey]: { ...prev[membershipKey], prices: { ...prev[membershipKey].prices, [activityKey]: value } }
+            }));
+          };
+
+          const handlePassChange = (membershipKey, passCat, val) => {
+            const value = Math.max(0, parseInt(val) || 0);
+            setMemberships(prev => ({
+              ...prev,
+              [membershipKey]: { ...prev[membershipKey], passes: { ...prev[membershipKey].passes, [passCat]: value } }
+            }));
+          };
+
+          const handleFeeChange = (membershipKey, val) => {
+            const value = Math.max(0, parseFloat(val) || 0);
+            setMemberships(prev => ({
+              ...prev,
+              [membershipKey]: { ...prev[membershipKey], fees: value }
+            }));
+          };
+
+          const addMembership = () => {
+            const newKey = `m_${Date.now()}`;
+            setMemberships(prev => ({
+              ...prev,
+              [newKey]: {
+                name: `New Plan ${Object.keys(prev).length}`,
+                fees: 0,
+                prices: { ...prev.no_membership.prices },
+                passes: { booking: 0, op: 0, league: 0, tournament: 0, clinic: 0 }
+              }
+            }));
+          };
+
+          const removeMembership = (id) => {
+            if (id === 'no_membership') return;
+            setMemberships(prev => {
+              const next = { ...prev };
+              delete next[id];
+              return next;
+            });
+          };
+
+          const updateMembershipName = (id, newName) => {
+            setMemberships(prev => ({
+              ...prev,
+              [id]: { ...prev[id], name: newName }
+            }));
+          };
+
+          const handleExport = () => {
+            const data = {
+              memberships,
+              personas,
+              exportDate: new Date().toISOString()
+            };
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `court_calculator_config_${new Date().toISOString().split('T')[0]}.json`;
+            link.click();
+            URL.revokeObjectURL(url);
+          };
+
+          const handleImport = (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+              try {
+                const data = JSON.parse(e.target.result);
+                if (data.memberships && data.personas) {
+                  setMemberships(data.memberships);
+                  setPersonas(data.personas);
+                  if (data.personas.length > 0) {
+                    setSelectedPersonaId(data.personas[0].id);
+                    setBehavior({ ...data.personas[0].behavior });
+                  }
+                }
+              } catch (err) {
+                alert("Failed to parse JSON configuration: " + err);
+              }
+            };
+            reader.readAsText(file);
+            event.target.value = '';
+          };
+
+          const results = useMemo(() => {
+            const calculated = Object.entries(memberships).map(([id, config]) => {
+              let totalBillItems = {};
+              let personalCostItems = {};
+              let totalHours = {};
+              
+              const bookingPassAllowance = config.passes['booking'] || 0;
+              totalBillItems['res'] = behavior['res'] * config.prices['res'];
+              totalBillItems['res_op'] = Math.max(0, behavior['res_op'] - bookingPassAllowance) * config.prices['res_op'];
+
+              const opPassAllowance = config.passes['op'] || 0;
+              const opPeakQty = behavior['op'];
+              const opOffPeakQty = behavior['op_op'];
+              const opPeakPassesUsed = Math.min(opPeakQty, opPassAllowance);
+              const remainingOpPasses = opPassAllowance - opPeakPassesUsed;
+              const opOffPeakPassesUsed = Math.min(opOffPeakQty, remainingOpPasses);
+
+              totalBillItems['op'] = (opPeakQty - opPeakPassesUsed) * config.prices['op'];
+              totalBillItems['op_op'] = (opOffPeakQty - opOffPeakPassesUsed) * config.prices['op_op'];
+
+              ['league', 'tournament', 'clinics'].forEach(ev => {
+                const cat = CATEGORY_MAP[ev];
+                const passAllowance = config.passes[cat] || 0;
+                totalBillItems[ev] = Math.max(0, behavior[ev] - passAllowance) * config.prices[ev];
+              });
+
+              Object.keys(config.prices).forEach(ev => {
+                const billedCost = totalBillItems[ev];
+                personalCostItems[ev] = IS_COURT_BASED[ev] ? billedCost / 2 : billedCost;
+                totalHours[ev] = behavior[ev] * HOURS_MAP[ev];
+              });
+
+              const totalBill = Object.values(totalBillItems).reduce((a, b) => a + b, 0) + config.fees;
+              const personalTotal = Object.values(personalCostItems).reduce((a, b) => a + b, 0) + config.fees;
+              const sumHours = Object.values(totalHours).reduce((a, b) => a + b, 0);
+
+              return {
+                id, ...config, itemized: totalBillItems, total: totalBill, personalTotal,
+                totalHours: sumHours, costPerHour: sumHours > 0 ? totalBill / sumHours : 0,
+                costPerHrPerson: sumHours > 0 ? personalTotal / sumHours : 0
+              };
+            });
+
+            const maxPersonalTotal = Math.max(...calculated.map(r => r.personalTotal));
+            
+            return calculated.map(r => ({
+              ...r,
+              savingsPct: maxPersonalTotal > 0 ? ((maxPersonalTotal - r.personalTotal) / maxPersonalTotal) * 100 : 0
+            }));
+          }, [behavior, memberships]);
+
+          const bestValueId = [...results].sort((a, b) => a.personalTotal - b.personalTotal)[0].id;
+
+          return (
+            <div className="min-h-screen p-4 md:p-8">
+              <div className="max-w-6xl mx-auto space-y-6">
+                
+                {/* Navigation Tabs */}
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-end border-b border-slate-200 gap-4">
+                  <div className="flex gap-1 overflow-x-auto w-full md:w-auto">
+                    <button onClick={() => setActiveTab('calc')} className={`flex items-center gap-2 px-6 py-3 text-sm font-bold transition-all border-b-2 rounded-t-lg whitespace-nowrap ${activeTab === 'calc' ? 'bg-white border-indigo-600 text-indigo-600' : 'text-slate-500 hover:text-slate-800 border-transparent'}`}>
+                      <Calculator className="w-4 h-4" /> Calculator
+                    </button>
+                    <button onClick={() => setActiveTab('personas')} className={`flex items-center gap-2 px-6 py-3 text-sm font-bold transition-all border-b-2 rounded-t-lg whitespace-nowrap ${activeTab === 'personas' ? 'bg-white border-indigo-600 text-indigo-600' : 'text-slate-500 hover:text-slate-800 border-transparent'}`}>
+                      <UserCircle className="w-4 h-4" /> Personas
+                    </button>
+                    <button onClick={() => setActiveTab('config')} className={`flex items-center gap-2 px-6 py-3 text-sm font-bold transition-all border-b-2 rounded-t-lg whitespace-nowrap ${activeTab === 'config' ? 'bg-white border-indigo-600 text-indigo-600' : 'text-slate-500 hover:text-slate-800 border-transparent'}`}>
+                      <Settings className="w-4 h-4" /> Memberships
+                    </button>
+                  </div>
+                  
+                  <div className="flex items-center gap-2 mb-2 w-full md:w-auto justify-end">
+                    <input type="file" ref={fileInputRef} onChange={handleImport} accept=".json" className="hidden" />
+                    <button onClick={() => fileInputRef.current.click()} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-50 transition-colors shadow-sm" title="Load JSON Configuration">
+                      <Upload className="w-3.5 h-3.5" /> Import
+                    </button>
+                    <button onClick={handleExport} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-50 transition-colors shadow-sm" title="Save JSON Configuration">
+                      <Download className="w-3.5 h-3.5" /> Export
+                    </button>
+                    <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg shadow-sm border border-slate-200 ml-2">
+                      <TrendingUp className="w-3.5 h-3.5 text-emerald-500" />
+                      <span className="text-[10px] font-bold uppercase tracking-tight text-slate-500">Standalone App</span>
+                    </div>
+                  </div>
+                </div>
+
+                {activeTab === 'calc' && (
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-in fade-in duration-300">
+                    <div className="lg:col-span-4 space-y-6">
+                      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                        <div className="flex items-center justify-between mb-6">
+                          <h2 className="text-lg font-semibold flex items-center gap-2">
+                            <UserCircle className="w-5 h-5 text-indigo-500" />
+                            Monthly Behavior
+                          </h2>
+                        </div>
+
+                        <div className="mb-8 space-y-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Select Profile</label>
+                          <select 
+                            value={selectedPersonaId}
+                            onChange={(e) => loadPersona(e.target.value)}
+                            className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer hover:border-indigo-300 transition-colors"
+                          >
+                            {personas.map(p => (
+                              <option key={p.id} value={p.id}>{p.name}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="space-y-6 border-t border-slate-100 pt-6">
+                          {Object.keys(behavior).map((key) => (
+                            <div key={key} className="space-y-2">
+                              <div className="flex justify-between items-center">
+                                <label className="text-xs font-bold text-slate-600 flex items-center gap-2">
+                                  {ACTIVITY_LABELS[key].icon}
+                                  {ACTIVITY_LABELS[key].label}
+                                  {IS_COURT_BASED[key] && <span className="text-[9px] text-slate-400 bg-slate-100 px-1 py-0.5 rounded border border-slate-200">Court</span>}
+                                </label>
+                                <input 
+                                  type="number" 
+                                  value={behavior[key]}
+                                  onChange={(e) => handleBehaviorChange(key, e.target.value)}
+                                  className="w-14 px-1.5 py-0.5 text-right text-xs font-bold border border-slate-200 rounded-md bg-slate-50 text-indigo-600 outline-none focus:ring-1 focus:ring-indigo-400"
+                                />
+                              </div>
+                              <input 
+                                type="range" min="0" max="20" step="1"
+                                value={behavior[key]}
+                                onChange={(e) => handleBehaviorChange(key, e.target.value)}
+                                className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="bg-amber-50 p-4 rounded-xl border border-amber-200 flex items-start gap-3 shadow-sm">
+                        <Info className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
+                        <div className="text-[11px] text-amber-900 leading-relaxed">
+                          <strong>Smart Pass Application:</strong>
+                          <ul className="mt-1 list-disc list-inside space-y-0.5">
+                            <li>Booking passes only apply to <strong>Off-Peak</strong>.</li>
+                            <li>Open Play passes cover both, prioritizing <strong>Peak</strong>.</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="lg:col-span-8 space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {results.map((res) => (
+                          <div key={res.id} className={`relative p-6 rounded-2xl border transition-all duration-300 ${bestValueId === res.id ? 'bg-white border-emerald-500 shadow-md ring-2 ring-emerald-500 ring-opacity-10 scale-105 z-10' : 'bg-white border-slate-200 shadow-sm opacity-90'}`}>
+                            {bestValueId === res.id && <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-emerald-500 text-white text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded-full z-20 whitespace-nowrap">Best Value</div>}
+                            <div className="flex items-center gap-3 mb-4">
+                              <div className={`p-2 rounded-lg ${bestValueId === res.id ? 'bg-emerald-50' : 'bg-slate-50'}`}>{React.cloneElement(getIcon(res.id), { className: `w-5 h-5 ${bestValueId === res.id ? 'text-emerald-600' : 'text-slate-600'}` })}</div>
+                              <h3 className="font-bold text-slate-800">{res.name}</h3>
+                            </div>
+                            
+                            <div className="space-y-1">
+                              <div className="flex items-baseline gap-2">
+                                <div className="text-3xl font-black text-slate-900">${res.personalTotal.toFixed(2)}</div>
+                                {res.savingsPct > 0 && (
+                                  <div className="flex items-center text-xs font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">
+                                    <ArrowDown className="w-3 h-3 mr-0.5" />
+                                    {res.savingsPct.toFixed(0)}%
+                                  </div>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-slate-400 font-bold uppercase tracking-tight">Personal Total / Month</div>
+                            </div>
+
+                            <div className="mt-4 pt-4 border-t border-slate-100 space-y-2">
+                              <div className="flex justify-between text-[11px]"><span className="text-slate-400 font-bold">Cost / Hr / Pers</span><span className="text-emerald-600 font-bold">${res.costPerHrPerson.toFixed(2)}</span></div>
+                              <div className="flex justify-between text-[11px]"><span className="text-slate-400 font-bold">Total Hours</span><span className="text-slate-700 font-bold">{res.totalHours}h</span></div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                        <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                          <h3 className="font-bold text-sm text-slate-700 flex items-center gap-2"><DollarSign className="w-4 h-4" /> Itemized Club Bill</h3>
+                          <div className="text-[10px] text-slate-400 italic">Pre-split total club charges</div>
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs text-left">
+                            <thead className="bg-white text-slate-400 font-bold uppercase tracking-tighter border-b">
+                              <tr><th className="px-6 py-3 font-bold">Activity</th>{results.map(r => <th key={r.id} className="px-6 py-3 text-right font-bold">{r.name}</th>)}</tr>
+                            </thead>
+                            <tbody className="divide-y text-slate-600">
+                              <tr><td className="px-6 py-3 font-medium italic text-slate-400">Monthly Fee</td>{results.map(r => <td key={r.id} className="px-6 py-3 text-right font-mono">${r.fees.toFixed(2)}</td>)}</tr>
+                              {Object.keys(behavior).map(key => (
+                                <tr key={key} className="hover:bg-slate-50/50 transition-colors">
+                                  <td className="px-6 py-3"><div className="flex items-center gap-2">{ACTIVITY_LABELS[key].label} <span className="text-[9px] bg-slate-100 px-1 py-0.5 rounded border border-slate-200 font-bold">x{behavior[key]}</span></div></td>
+                                  {results.map(r => {
+                                     const isFree = r.itemized[key] === 0 && behavior[key] > 0;
+                                     return (
+                                      <td 
+                                        key={r.id} 
+                                        className={`px-6 py-3 text-right font-mono ${isFree ? 'text-emerald-500 font-bold' : ''}`}
+                                      >
+                                        ${r.itemized[key].toFixed(2)}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              ))}
+                            </tbody>
+                            <tfoot>
+                              <tr className="bg-slate-900 text-white font-bold">
+                                <td className="px-6 py-4 uppercase tracking-wider text-[10px]">Club Bill Total</td>
+                                {results.map(r => <td key={r.id} className="px-6 py-4 text-right text-sm">${r.total.toFixed(2)}</td>)}
+                              </tr>
+                            </tfoot>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'personas' && (
+                  <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-300">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <h2 className="text-xl font-bold text-slate-800">Manage Personas</h2>
+                        <p className="text-sm text-slate-500">Define your typical monthly usage profiles.</p>
+                      </div>
+                      <button 
+                        onClick={addPersona}
+                        className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all"
+                      >
+                        <Plus className="w-4 h-4" /> Add Persona
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {personas.map((persona) => (
+                        <div key={persona.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col hover:shadow-md transition-shadow">
+                          <div className="p-5 border-b flex justify-between items-center bg-slate-50/50">
+                            <div className="flex-1 mr-4">
+                              <input 
+                                type="text" 
+                                value={persona.name} 
+                                onChange={(e) => updatePersonaName(persona.id, e.target.value)}
+                                className="bg-transparent font-bold text-lg outline-none focus:ring-1 focus:ring-indigo-200 rounded px-1 w-full"
+                              />
+                            </div>
+                            <button 
+                              onClick={() => removePersona(persona.id)} 
+                              disabled={personas.length <= 1}
+                              className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-30"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            {Object.keys(persona.behavior).map(key => (
+                              <div key={key} className="space-y-1">
+                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">{ACTIVITY_LABELS[key].label}</label>
+                                <div className="flex items-center gap-2">
+                                  <input 
+                                    type="number"
+                                    value={persona.behavior[key]}
+                                    onChange={(e) => handlePersonaBehaviorChange(persona.id, key, e.target.value)}
+                                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono focus:ring-1 focus:ring-indigo-500 outline-none"
+                                  />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="mt-auto p-4 bg-indigo-50/30 border-t flex justify-between">
+                            <button 
+                              onClick={() => { loadPersona(persona.id); setActiveTab('calc'); }}
+                              className="text-xs font-bold text-indigo-600 hover:underline flex items-center gap-1"
+                            >
+                              <Calculator className="w-3.5 h-3.5" /> Load into Calculator
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'config' && (
+                  <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-300">
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                      <div>
+                        <h2 className="text-xl font-bold text-slate-800">Manage Memberships</h2>
+                        <p className="text-sm text-slate-500">Define your membership plans, pricing, and perks.</p>
+                      </div>
+                      <div className="flex items-center gap-4 w-full md:w-auto">
+                        <div className="flex items-center bg-slate-200/50 p-1 rounded-lg border border-slate-200">
+                          <button 
+                            onClick={() => setPricingMode('dollar')}
+                            className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${pricingMode === 'dollar' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+                          >
+                            $ Price
+                          </button>
+                          <button 
+                            onClick={() => setPricingMode('percent')}
+                            className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${pricingMode === 'percent' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+                          >
+                            % Discount
+                          </button>
+                        </div>
+                        <button 
+                          onClick={addMembership}
+                          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all ml-auto md:ml-0"
+                        >
+                          <Plus className="w-4 h-4" /> Add Plan
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                       {Object.keys(memberships).map((mKey) => (
+                          <div key={mKey} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col hover:shadow-md transition-shadow">
+                            <div className="p-5 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
+                              <div className="flex items-center gap-3 flex-1 mr-4">
+                                <div className="p-2 bg-white rounded-lg border border-slate-200 shrink-0">{getIcon(mKey)}</div>
+                                <input 
+                                  type="text" 
+                                  value={memberships[mKey].name} 
+                                  onChange={(e) => updateMembershipName(mKey, e.target.value)}
+                                  className="bg-transparent font-bold text-lg text-slate-800 outline-none focus:ring-1 focus:ring-indigo-200 rounded px-1 w-full"
+                                  placeholder="Plan Name"
+                                />
+                              </div>
+                              {mKey !== 'no_membership' && (
+                                <button 
+                                  onClick={() => removeMembership(mKey)}
+                                  className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              )}
+                            </div>
+                            <div className="p-6 space-y-6">
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Monthly Membership Fee</label>
+                                <div className="relative">
+                                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm font-medium">$</span>
+                                  <input type="number" value={memberships[mKey].fees} onChange={(e) => handleFeeChange(mKey, e.target.value)} className="w-full pl-7 pr-4 py-2 border border-slate-200 rounded-lg font-mono text-sm outline-none focus:ring-1 focus:ring-indigo-400" />
+                                </div>
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Activity Pricing</label>
+                                <div className="grid gap-2">
+                                  {Object.keys(memberships[mKey].prices).map(pKey => {
+                                    const basePrice = memberships.no_membership.prices[pKey] || 0;
+                                    const currentPrice = memberships[mKey].prices[pKey];
+                                    const discountPct = basePrice > 0 ? ((basePrice - currentPrice) / basePrice) * 100 : 0;
+                                    const isBase = mKey === 'no_membership';
+
+                                    return (
+                                      <div key={pKey} className="flex justify-between items-center text-[11px] p-2 bg-slate-50 rounded border border-slate-200">
+                                        <span className="text-slate-600 font-medium">{ACTIVITY_LABELS[pKey].label}</span>
+                                        <div className="flex items-center gap-2">
+                                          {!isBase && (
+                                            <span className="text-[10px] text-slate-400 font-bold text-right w-12">
+                                              {pricingMode === 'dollar' 
+                                                ? `${Math.round(discountPct)}% off` 
+                                                : `$${currentPrice.toFixed(2)}`}
+                                            </span>
+                                          )}
+                                          <div className="relative flex items-center">
+                                            {isBase || pricingMode === 'dollar' ? (
+                                              <>
+                                                <span className="absolute left-1.5 text-slate-400">$</span>
+                                                <input 
+                                                  type="number" 
+                                                  value={currentPrice} 
+                                                  onChange={(e) => handlePriceChange(mKey, pKey, e.target.value)} 
+                                                  className="w-16 pl-4 pr-1 py-1 text-right font-mono border border-slate-200 rounded outline-none bg-white focus:ring-1 focus:ring-indigo-400" 
+                                                />
+                                              </>
+                                            ) : (
+                                              <>
+                                                <input 
+                                                  type="number" 
+                                                  value={Number(discountPct.toFixed(1))} 
+                                                  onChange={(e) => {
+                                                    const newDisc = parseFloat(e.target.value) || 0;
+                                                    const newPrice = Number((basePrice * (1 - newDisc / 100)).toFixed(2));
+                                                    handlePriceChange(mKey, pKey, newPrice);
+                                                  }} 
+                                                  className="w-16 pl-1 pr-4 py-1 text-right font-mono border border-slate-200 rounded outline-none bg-white focus:ring-1 focus:ring-indigo-400" 
+                                                />
+                                                <span className="absolute right-1.5 text-slate-400">%</span>
+                                              </>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Included Passes</label>
+                                <div className="grid gap-2">
+                                  {PASS_CATEGORIES.map(cat => (
+                                    <div key={cat.key} className="flex justify-between items-center text-[11px] p-2 bg-indigo-50/50 rounded border border-indigo-200">
+                                      <span className="font-bold text-indigo-700">{cat.label}</span>
+                                      <input type="number" value={memberships[mKey].passes[cat.key]} onChange={(e) => handlePassChange(mKey, cat.key, e.target.value)} className="w-12 p-1 text-right font-mono border border-indigo-200 rounded outline-none bg-white focus:ring-1 focus:ring-indigo-400 text-indigo-900" />
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
+
+              </div>
+            </div>
+          );
+        };
+
+        // Render the app to the root div
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
