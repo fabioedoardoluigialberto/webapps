@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Real-Time Ping Pong Stroke Analysis</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.0.0"></script>
+
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .gradient-bg { background: linear-gradient(to right, #6366f1, #8b5cf6); }
+        .spinner { border-top-color: #6366f1; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .btn-disabled { background-color: #9ca3af; cursor: not-allowed; }
+        .btn-recording { background-color: #ef4444; }
+        .btn-recording:hover { background-color: #dc2626; }
+        .filter-btn-active {
+            background-color: #4f46e5;
+            color: white;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex flex-col items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-6xl bg-white rounded-2xl shadow-xl overflow-hidden">
+        <!-- Header -->
+        <header class="gradient-bg p-4">
+            <h1 class="text-3xl font-bold text-white text-center">Ping Pong Stroke Analysis</h1>
+        </header>
+
+        <div class="flex border-b">
+            <button id="live-tab" class="flex-1 py-3 px-4 text-center font-semibold text-white bg-indigo-600">Live Analysis</button>
+            <button id="review-tab" class="flex-1 py-3 px-4 text-center font-semibold text-indigo-700 bg-gray-200 hover:bg-gray-300">Data Review</button>
+        </div>
+        
+        <!-- Loading State -->
+        <div id="loading-state" class="text-center p-12">
+            <div class="flex justify-center items-center mb-4"><div class="spinner w-8 h-8 border-4 rounded-full"></div></div>
+            <p id="loading-text" class="text-lg font-semibold text-gray-700">Loading AI model...</p>
+        </div>
+        
+        <!-- Main Content -->
+        <main id="app-content" class="hidden">
+            <!-- Live Analysis View -->
+            <div id="live-view">
+                <div class="grid md:grid-cols-2 gap-6 p-6">
+                     <div class="flex flex-col gap-4">
+                        <div id="video-wrapper" class="relative w-full aspect-video rounded-xl overflow-hidden shadow-lg bg-black">
+                            <video id="webcam" class="absolute top-0 left-0 w-full h-full object-cover" autoplay playsinline></video>
+                            <canvas id="live-canvas" class="absolute top-0 left-0 w-full h-full"></canvas>
+                            <div id="signal-overlay" class="hidden absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center z-10">
+                                <p id="signal-text" class="text-8xl font-bold text-red-500 drop-shadow-lg"></p>
+                            </div>
+                            <button id="fullscreen-btn" class="absolute top-2 right-2 p-2 bg-black bg-opacity-50 rounded-full text-white hover:bg-opacity-75 z-20">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                            </button>
+                        </div>
+                        <div class="grid grid-cols-1 gap-4">
+                            <div class="bg-gray-50 rounded-xl p-4 shadow-inner">
+                                <h3 class="text-lg font-semibold text-gray-700 mb-2 text-center">Movement Plots</h3>
+                                <canvas id="movement-chart-x"></canvas>
+                                <canvas id="movement-chart-y" class="mt-4"></canvas>
+                            </div>
+                        </div>
+                     </div>
+                    <div id="analysis-panel" class="flex flex-col gap-4">
+                        <div class="bg-gray-50 rounded-xl p-4 shadow-inner">
+                                <h3 class="text-lg font-semibold text-gray-700 mb-2 text-center">Output Probabilities</h3>
+                                <canvas id="logit-chart"></canvas>
+                            </div>
+                        <div class="flex flex-col items-center justify-center bg-gray-50 rounded-xl p-6 shadow-inner">
+                             <h2 class="text-2xl font-semibold text-gray-700 mb-2">Detected Stroke</h2>
+                             <div class="w-full h-28 bg-gray-200 rounded-lg flex items-center justify-center">
+                                <p id="stroke-text" class="text-4xl font-bold text-gray-800">---</p>
+                             </div>
+                        </div>
+                        <div class="bg-gray-50 rounded-xl p-6 shadow-inner">
+                            <h3 class="text-xl font-semibold text-gray-700 mb-4 text-center">Train Your Model</h3>
+                            <div id="training-status" class="text-center font-bold text-lg mb-4 h-8 text-indigo-600">Ready to Record</div>
+                            <div class="flex flex-col gap-2 mb-2">
+                                <div class="flex items-center gap-2"><button id="record-forehand" class="flex-grow bg-indigo-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-600 transition-colors">Record Forehand</button><input type="number" id="forehand-count" class="w-20 p-2 text-center rounded-lg border border-gray-300" value="5" min="1"></div>
+                                <div class="flex items-center gap-2"><button id="record-backhand" class="flex-grow bg-purple-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-purple-600 transition-colors">Record Backhand</button><input type="number" id="backhand-count" class="w-20 p-2 text-center rounded-lg border border-gray-300" value="5" min="1"></div>
+                            </div>
+                             <button id="record-none" class="w-full bg-gray-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-gray-600 transition-colors mb-4">Start Recording No Stroke</button>
+                             <button id="stop-recording" class="w-full bg-red-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-600 transition-colors mb-4 hidden">Stop Sequence</button>
+                            <div class="text-sm text-center text-gray-600"><p>Forehand Samples: <span id="forehand-samples" class="font-bold">0</span></p><p>Backhand Samples: <span id="backhand-samples" class="font-bold">0</span></p><p>No Stroke Samples: <span id="none-samples" class="font-bold">0</span></p></div>
+                            <button id="train-model" class="w-full mt-4 bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 transition-colors btn-disabled">Train Model</button>
+                            <p id="model-status" class="text-center mt-2 text-sm text-gray-500 font-semibold">Model is not trained.</p>
+                            <div class="grid grid-cols-2 gap-4 mt-4 border-t pt-4"><button id="save-data-button" class="w-full bg-blue-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-600 transition-colors">Save Data</button><label for="load-data-input" class="w-full bg-yellow-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-yellow-600 transition-colors text-center cursor-pointer">Load Data</label><input type="file" id="load-data-input" class="hidden" accept=".json"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Data Review View -->
+            <div id="review-view" class="hidden">
+                 <div class="p-6">
+                    <div id="filter-controls" class="flex justify-center gap-2 mb-4 p-2 bg-gray-100 rounded-lg">
+                        <button class="filter-btn filter-btn-active px-4 py-2 text-sm font-semibold rounded-lg" data-filter="all">All</button>
+                        <button class="filter-btn px-4 py-2 text-sm font-semibold rounded-lg" data-filter="none">None</button>
+                        <button class="filter-btn px-4 py-2 text-sm font-semibold rounded-lg" data-filter="forehand">Forehand</button>
+                        <button class="filter-btn px-4 py-2 text-sm font-semibold rounded-lg" data-filter="backhand">Backhand</button>
+                    </div>
+                     <div class="grid md:grid-cols-2 gap-6">
+                         <div class="flex flex-col gap-4">
+                            <div class="relative w-full aspect-video rounded-xl overflow-hidden shadow-lg bg-black">
+                                <canvas id="replay-canvas" class="absolute top-0 left-0 w-full h-full"></canvas>
+                            </div>
+                            <div class="flex items-center justify-center gap-4">
+                                <button id="prev-sample-btn" class="font-bold p-2">&lt; Prev</button>
+                                <button id="play-pause-btn" class="font-bold p-2 bg-indigo-500 text-white rounded-lg w-20">Play</button>
+                                <button id="next-sample-btn" class="font-bold p-2">Next &gt;</button>
+                            </div>
+                            <p id="sample-info" class="text-center font-semibold"></p>
+                            <button id="delete-sample-btn" class="w-full max-w-xs mx-auto bg-red-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-600 transition-colors">Delete This Sample</button>
+                        </div>
+                         <div class="flex flex-col gap-4">
+                            <div class="bg-gray-50 rounded-xl p-4 shadow-inner">
+                                <h3 class="text-lg font-semibold text-gray-700 mb-2 text-center">Keypoint Position</h3>
+                                <canvas id="keypoint-plot-canvas"></canvas>
+                            </div>
+                            <div class="bg-gray-50 rounded-xl p-4 shadow-inner">
+                                <h3 class="text-lg font-semibold text-gray-700 mb-2 text-center">Label vs. Prediction (p(t))</h3>
+                                <canvas id="label-plot-canvas"></canvas>
+                            </div>
+                         </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Confirmation Modal -->
+    <div id="confirmation-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center z-50">
+        <div class="p-8 border w-96 shadow-lg rounded-2xl bg-white">
+            <div class="text-center">
+                <h3 class="text-2xl font-bold text-gray-900">Confirm Deletion</h3>
+                <p class="text-md text-gray-500 mt-2">Are you sure you want to delete this sample? This action cannot be undone.</p>
+                <div class="flex justify-center mt-6 gap-4">
+                    <button id="confirm-delete-btn" class="px-6 py-2 bg-red-500 text-white text-lg font-semibold rounded-lg hover:bg-red-600">Delete</button>
+                    <button id="cancel-delete-btn" class="px-6 py-2 bg-gray-200 text-gray-800 text-lg font-semibold rounded-lg hover:bg-gray-300">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <script>
+        // --- DOM Elements ---
+        const loadingState = document.getElementById('loading-state');
+        const appContent = document.getElementById('app-content');
+        const liveTab = document.getElementById('live-tab');
+        const reviewTab = document.getElementById('review-tab');
+        const liveView = document.getElementById('live-view');
+        const reviewView = document.getElementById('review-view');
+        const videoWrapper = document.getElementById('video-wrapper');
+        const liveVideo = document.getElementById('webcam');
+        const liveCanvas = document.getElementById('live-canvas');
+        const liveCtx = liveCanvas.getContext('2d');
+        const signalOverlay = document.getElementById('signal-overlay');
+        const signalText = document.getElementById('signal-text');
+        const fullscreenBtn = document.getElementById('fullscreen-btn');
+        const movementChartCanvasX = document.getElementById('movement-chart-x');
+        const movementChartCanvasY = document.getElementById('movement-chart-y');
+        const logitChartCanvas = document.getElementById('logit-chart');
+        const strokeText = document.getElementById('stroke-text');
+        const trainingStatus = document.getElementById('training-status');
+        const recordForehandBtn = document.getElementById('record-forehand');
+        const recordBackhandBtn = document.getElementById('record-backhand');
+        const forehandCountInput = document.getElementById('forehand-count');
+        const backhandCountInput = document.getElementById('backhand-count');
+        const stopRecordingBtn = document.getElementById('stop-recording');
+        const recordNoneBtn = document.getElementById('record-none');
+        const forehandSamplesEl = document.getElementById('forehand-samples');
+        const backhandSamplesEl = document.getElementById('backhand-samples');
+        const noneSamplesEl = document.getElementById('none-samples');
+        const trainModelBtn = document.getElementById('train-model');
+        const modelStatusEl = document.getElementById('model-status');
+        const saveDataBtn = document.getElementById('save-data-button');
+        const loadDataInput = document.getElementById('load-data-input');
+        // Review View Elements
+        const filterControls = document.getElementById('filter-controls');
+        const replayCanvas = document.getElementById('replay-canvas');
+        const replayCtx = replayCanvas.getContext('2d');
+        const prevSampleBtn = document.getElementById('prev-sample-btn');
+        const nextSampleBtn = document.getElementById('next-sample-btn');
+        const playPauseBtn = document.getElementById('play-pause-btn');
+        const deleteSampleBtn = document.getElementById('delete-sample-btn');
+        const sampleInfoEl = document.getElementById('sample-info');
+        const keypointPlotCanvas = document.getElementById('keypoint-plot-canvas');
+        const labelPlotCanvas = document.getElementById('label-plot-canvas');
+        const confirmationModal = document.getElementById('confirmation-modal');
+        const confirmDeleteBtn = document.getElementById('confirm-delete-btn');
+        const cancelDeleteBtn = document.getElementById('cancel-delete-btn');
+        
+        
+        // --- Globals & State ---
+        let poseDetector, model;
+        let movementChartX, movementChartY, logitChart, keypointChart, labelChart;
+        let animationFrameId;
+        let trainingData = [];
+        let predictionQueue = [];
+        let isSequenceActive = false;
+        let isRecordingNone = false;
+        let lastNoneCaptureTime = 0;
+        let lastPredictionTime = 0;
+
+        const state = {
+            dataBuffer: [], isModelTrained: false, predictionCooldown: 0, logitBuffer: []
+        };
+        const reviewState = {
+            currentIndex: 0, isPlaying: false, currentFrame: 0, animationFrameId: null,
+            currentFilter: 'all', filteredSamples: []
+        }
+
+        // --- CONSTANTS & SETTINGS ---
+        const WINDOW_SIZE_MS = 6000;
+        const TARGET_FPS = 6;
+        const NUM_TIMESTEPS = TARGET_FPS * (WINDOW_SIZE_MS / 1000);
+        const NUM_FEATURES = 34;
+        const PREDICTION_DELAY = 500;
+        const PREDICTION_COOLDOWN_FRAMES = TARGET_FPS * 1.5;
+        const PREDICTION_THRESHOLD = 0.8;
+        const LABELS = ['none', 'forehand', 'backhand'];
+        const KEYPOINT_ORDER = [ 'nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear', 'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow', 'left_wrist', 'right_wrist', 'left_hip', 'right_hip', 'left_knee', 'right_knee', 'left_ankle', 'right_ankle' ];
+        const KEYPOINT_COLORS = [ '#ff0000', '#ff4000', '#ff8000', '#ffbf00', '#ffff00', '#bfff00', '#80ff00', '#40ff00', '#00ff00', '#00ff40', '#00ff80', '#00ffbf', '#00ffff', '#00bfff', '#0080ff', '#0040ff', '#0000ff' ];
+        const PULSE_WIDTH_MS = 500;
+        const PULSE_START_BEFORE_HT_MS = -1500;
+
+        // --- Core Application Logic ---
+        async function init() {
+            try {
+                await tf.setBackend('webgl');
+                await tf.ready();
+                poseDetector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING });
+                model = createModel();
+                loadingState.classList.add('hidden');
+                appContent.classList.remove('hidden');
+                switchToLiveView();
+            } catch (error) {
+                console.error("Initialization failed:", error);
+                document.getElementById('loading-text').innerHTML = `<p class="text-red-600 font-semibold">Error: Could not start AI model.</p>`;
+            }
+        }
+        
+        async function setupLiveView() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 'video': { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' } });
+                liveVideo.srcObject = stream;
+                liveVideo.addEventListener('loadeddata', () => {
+                    liveCanvas.width = liveVideo.videoWidth;
+                    liveCanvas.height = liveVideo.videoHeight;
+                    if (!movementChartX) setupCharts();
+                    startDetectionLoop();
+                });
+            } catch (err) {
+                document.getElementById('analysis-panel').innerHTML = `<p class="text-red-500 p-4 text-center">Could not access webcam. Please grant permission and refresh.</p>`;
+            }
+        }
+        
+        function startDetectionLoop() {
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            async function detectionLoop() {
+                if (!poseDetector || liveVideo.paused || liveVideo.ended) {
+                    animationFrameId = requestAnimationFrame(detectionLoop); return;
+                }
+                const poses = await poseDetector.estimatePoses(liveVideo);
+                liveCtx.clearRect(0, 0, liveCanvas.width, liveCanvas.height);
+                let keypoints = null;
+                if (poses?.length > 0) {
+                    keypoints = poses[0].keypoints;
+                    drawKeypoints(keypoints, liveCtx);
+                    drawSkeleton(keypoints, liveCtx);
+                }
+                updateDataBuffer(keypoints);
+                if (isRecordingNone) captureContinuousNoneSample();
+                
+                const now = Date.now();
+                let logits = null;
+                if (state.isModelTrained && !isSequenceActive && (now - lastPredictionTime > 1000 / TARGET_FPS)) {
+                    logits = predictStroke();
+                    lastPredictionTime = now;
+                }
+                updateLogitBuffer(logits);
+                updateCharts();
+                processPredictionQueue();
+                if (state.predictionCooldown > 0) state.predictionCooldown--;
+                animationFrameId = requestAnimationFrame(detectionLoop);
+            }
+            detectionLoop();
+        }
+
+        // --- Data Handling & Preprocessing ---
+        function updateDataBuffer(keypoints) { const now = Date.now(); state.dataBuffer.push({ timestamp: now, keypoints: keypoints }); const cutoff = now - (WINDOW_SIZE_MS * 1.5); state.dataBuffer = state.dataBuffer.filter(d => d.timestamp >= cutoff); }
+        function updateLogitBuffer(logits) { const now = Date.now(); state.logitBuffer.push({ timestamp: now, logits: logits }); const cutoff = now - WINDOW_SIZE_MS; state.logitBuffer = state.logitBuffer.filter(d => d.timestamp >= cutoff); }
+        
+        function getNonePadding(requiredLength) {
+            const noneSamples = trainingData.filter(d => d.ys === 0);
+            if (noneSamples.length === 0) return Array(requiredLength).fill({timestamp: 0, keypoints: null});
+
+            const randomSample = noneSamples[Math.floor(Math.random() * noneSamples.length)];
+            const padding = randomSample.buffer.slice(-requiredLength);
+            return padding;
+        }
+
+        function preprocessData(buffer) {
+            let processedBuffer = [...buffer];
+            if (buffer.length < NUM_TIMESTEPS) {
+                const paddingNeeded = NUM_TIMESTEPS - buffer.length;
+                const padding = getNonePadding(paddingNeeded);
+                processedBuffer = [...padding, ...buffer];
+            }
+            
+            let features = [];
+            const lastTimestamp = processedBuffer[processedBuffer.length - 1].timestamp;
+            const interval = WINDOW_SIZE_MS / NUM_TIMESTEPS;
+
+            for (let i = 0; i < NUM_TIMESTEPS; i++) {
+                const targetTimestamp = lastTimestamp - (NUM_TIMESTEPS - 1 - i) * interval;
+                let closest = null;
+                let minDiff = Infinity;
+                for(const point of processedBuffer) {
+                    const diff = Math.abs(point.timestamp - targetTimestamp);
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        closest = point;
+                    }
+                }
+                
+                if (closest && closest.keypoints) {
+                    const keypointMap = new Map(closest.keypoints.map(p => [p.name, p]));
+                    const leftShoulder = keypointMap.get('left_shoulder');
+                    const rightShoulder = keypointMap.get('right_shoulder');
+                    if (leftShoulder && rightShoulder && leftShoulder.score > 0.3 && rightShoulder.score > 0.3) {
+                        const centerX = (leftShoulder.x + rightShoulder.x) / 2;
+                        const centerY = (leftShoulder.y + rightShoulder.y) / 2;
+                        const shoulderDist = Math.hypot(leftShoulder.x - rightShoulder.x, leftShoulder.y - rightShoulder.y) || 1;
+                        for (const name of KEYPOINT_ORDER) {
+                            const kp = keypointMap.get(name);
+                            if (kp && kp.score > 0.3) {
+                                features.push((kp.x - centerX) / shoulderDist);
+                                features.push((kp.y - centerY) / shoulderDist);
+                            } else { features.push(0, 0); }
+                        }
+                    } else { features.push(...Array(NUM_FEATURES).fill(0)); }
+                } else { features.push(...Array(NUM_FEATURES).fill(0)); }
+            }
+            return features;
+        }
+
+        // --- NN Model and Training ---
+        function createModel() { 
+            const newModel = tf.sequential();
+            newModel.add(tf.layers.reshape({
+                targetShape: [NUM_TIMESTEPS, NUM_FEATURES],
+                inputShape: [NUM_TIMESTEPS * NUM_FEATURES]
+            }));
+            newModel.add(tf.layers.conv1d({
+                filters: 16,
+                kernelSize: 3,
+                activation: 'relu'
+            }));
+             newModel.add(tf.layers.conv1d({
+                filters: 32,
+                kernelSize: 3,
+                activation: 'relu'
+            }));
+            newModel.add(tf.layers.flatten());
+            newModel.add(tf.layers.dense({
+                units: LABELS.length,
+                activation: 'softmax'
+            }));
+            newModel.compile({ optimizer: 'adam', loss: 'categoricalCrossentropy', metrics: ['accuracy'] }); 
+            return newModel;
+        }
+        
+        async function startRecordingSequence(strokeType) {
+            if (isSequenceActive || isRecordingNone) return;
+            const countInput = strokeType === 'forehand' ? forehandCountInput : backhandCountInput;
+            const count = parseInt(countInput.value, 10);
+            if (isNaN(count) || count <= 0) { alert("Please enter a valid number of samples."); return; }
+            isSequenceActive = true;
+            toggleSequenceControls(true);
+            let delayCount = 10;
+            showSignal(`Get Ready... ${delayCount}`);
+            const delayInterval = setInterval(() => {
+                if (!isSequenceActive) { clearInterval(delayInterval); hideSignal(); return; }
+                delayCount--;
+                showSignal(`Get Ready... ${delayCount}`);
+                if (delayCount <= 0) { clearInterval(delayInterval); hideSignal(); runRecordingLoop(strokeType, count); }
+            }, 1000);
+        }
+
+        async function runRecordingLoop(strokeType, count) {
+            for (let i = 1; i <= count; i++) {
+                if (!isSequenceActive) { trainingStatus.innerText = "Sequence stopped."; break; }
+                await recordSingleSample(strokeType, i, count);
+            }
+            isSequenceActive = false;
+            toggleSequenceControls(false);
+            if (trainingStatus.innerText !== "Sequence stopped.") trainingStatus.innerText = "Sequence complete.";
+            setTimeout(() => { if(!isRecordingNone) trainingStatus.innerText = 'Ready to Record' }, 2000);
+        }
+        
+        function recordSingleSample(strokeType, currentSample, totalSamples) {
+            return new Promise(async (resolve) => {
+                trainingStatus.innerText = `Recording ${strokeType} (${currentSample}/${totalSamples})`;
+                showSignal("Ready");
+                await new Promise(r => setTimeout(r, 2000));
+                if (!isSequenceActive) { hideSignal(); resolve(); return; }
+
+                showSignal("Stroke!");
+                const hitTime = Date.now(); // HT is now at the START of the stroke period
+                await new Promise(r => setTimeout(r, 1000));
+                if (!isSequenceActive) { hideSignal(); resolve(); return; }
+                
+                showSignal("Stay");
+                
+                // Wait for the full window centered on HT to be available in the buffer
+                await new Promise(r => setTimeout(r, WINDOW_SIZE_MS / 2)); 
+                if (!isSequenceActive) { hideSignal(); resolve(); return; }
+                
+                const windowStart = hitTime - (WINDOW_SIZE_MS / 2);
+                const windowEnd = hitTime + (WINDOW_SIZE_MS / 2);
+                const sampleBuffer = state.dataBuffer.filter(d => d.timestamp >= windowStart && d.timestamp <= windowEnd);
+                captureTrainingSample(strokeType, sampleBuffer);
+                
+                hideSignal();
+                await new Promise(r => setTimeout(r, 500)); 
+                resolve();
+            });
+        }
+
+        function captureTrainingSample(strokeType, buffer) {
+            const dataToUse = buffer || state.dataBuffer;
+            if (dataToUse.length < NUM_TIMESTEPS * 0.8) { console.warn("Not enough data to capture."); return; }
+            const labelIndex = LABELS.indexOf(strokeType);
+            trainingData.push({ buffer: dataToUse, ys: labelIndex });
+            updateSampleCounts();
+        }
+        function captureContinuousNoneSample() { const now = Date.now(); if (now - lastNoneCaptureTime > 250) { captureTrainingSample('none', state.dataBuffer); lastNoneCaptureTime = now; } }
+        async function trainModel() { if (trainingData.length < 2) return; toggleAllTrainingButtons(false); trainModelBtn.classList.add('btn-disabled'); modelStatusEl.innerText = 'Training in progress...'; await tf.nextFrame(); tf.util.shuffle(trainingData); const xs = tf.tensor(trainingData.map(d => preprocessData(d.buffer))); const ys = tf.oneHot(tf.tensor1d(trainingData.map(d => d.ys), 'int32'), LABELS.length); await model.fit(xs, ys, { epochs: 100, shuffle: true, callbacks: { onEpochEnd: (epoch, logs) => console.log(`Epoch ${epoch}: loss = ${logs.loss}, acc = ${logs.acc}`) } }); xs.dispose(); ys.dispose(); state.isModelTrained = true; modelStatusEl.innerText = 'Model trained successfully!'; trainModelBtn.innerText = 'Re-train Model'; trainModelBtn.classList.remove('btn-disabled'); toggleAllTrainingButtons(true); }
+        function predictStroke() { if (state.predictionCooldown > 0 || state.dataBuffer.length < NUM_TIMESTEPS * 0.8) return null; let logits = null; tf.tidy(() => { const features = preprocessData(state.dataBuffer); const predictionTensor = model.predict(tf.tensor([features])); const probabilities = predictionTensor.dataSync(); const predictionIndex = predictionTensor.argMax(1).dataSync()[0]; logits = Array.from(probabilities); const confidence = probabilities[predictionIndex]; if (predictionIndex !== 0 && confidence > PREDICTION_THRESHOLD) { predictionQueue.push({ prediction: LABELS[predictionIndex], timestamp: Date.now() }); state.predictionCooldown = PREDICTION_COOLDOWN_FRAMES; } }); return logits; }
+        function processPredictionQueue() { const now = Date.now(); if (predictionQueue.length > 0 && now - predictionQueue[0].timestamp >= PREDICTION_DELAY) { const stroke = predictionQueue.shift().prediction; strokeText.innerText = stroke; setTimeout(() => { if (strokeText.innerText === stroke) strokeText.innerText = '---'; }, 1000); } }
+        
+        // --- Data Review Logic ---
+        function setupReviewView() {
+            if (!keypointChart) setupReviewCharts();
+            setReviewFilter('all');
+        }
+
+        function setReviewFilter(filter) {
+            reviewState.currentFilter = filter;
+            if (filter === 'all') {
+                reviewState.filteredSamples = trainingData.map((sample, index) => ({...sample, originalIndex: index}));
+            } else {
+                const labelIndex = LABELS.indexOf(filter);
+                reviewState.filteredSamples = trainingData
+                    .map((sample, index) => ({...sample, originalIndex: index}))
+                    .filter(d => d.ys === labelIndex);
+            }
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.classList.remove('filter-btn-active');
+                if (btn.dataset.filter === filter) btn.classList.add('filter-btn-active');
+            });
+
+            if (reviewState.filteredSamples.length === 0) {
+                sampleInfoEl.innerText = `No "${filter}" samples recorded.`;
+                if(keypointChart) {
+                    keypointChart.data.datasets = [];
+                    keypointChart.update();
+                }
+                 if(labelChart) {
+                    labelChart.data.datasets.forEach(ds => ds.data = []);
+                    labelChart.update();
+                }
+                replayCtx.clearRect(0, 0, replayCanvas.width, replayCanvas.height);
+                return;
+            }
+            loadSampleForReview(0);
+        }
+        
+        function loadSampleForReview(index) {
+            if (index < 0 || index >= reviewState.filteredSamples.length) return;
+            reviewState.currentIndex = index;
+            reviewState.currentFrame = 0;
+            reviewState.isPlaying = false;
+            playPauseBtn.innerText = 'Play';
+            if (reviewState.animationFrameId) cancelAnimationFrame(reviewState.animationFrameId);
+
+            const sample = reviewState.filteredSamples[index];
+            const sampleLabel = LABELS[sample.ys];
+            sampleInfoEl.innerText = `Sample ${index + 1} of ${reviewState.filteredSamples.length} (${sampleLabel})`;
+            
+            updateKeypointPlot(sample.buffer);
+            updateLabelPredictionPlot(sample);
+            
+            replayCanvas.width = replayCanvas.parentElement.clientWidth;
+            replayCanvas.height = replayCanvas.parentElement.clientHeight;
+            drawSampleSkeletonFromBuffer(sample.buffer, 0);
+        }
+
+        function playPauseReplay() {
+            if(reviewState.filteredSamples.length === 0) return;
+            reviewState.isPlaying = !reviewState.isPlaying;
+            if (reviewState.isPlaying) {
+                playPauseBtn.innerText = 'Pause';
+                replayAnimationLoop();
+            } else {
+                playPauseBtn.innerText = 'Play';
+                if (reviewState.animationFrameId) cancelAnimationFrame(reviewState.animationFrameId);
+            }
+        }
+
+        function replayAnimationLoop() {
+            if (!reviewState.isPlaying) return;
+            reviewState.currentFrame++;
+            const sampleBuffer = reviewState.filteredSamples[reviewState.currentIndex].buffer;
+            if (reviewState.currentFrame >= sampleBuffer.length) {
+                reviewState.currentFrame = 0; // Loop
+            }
+            drawSampleSkeletonFromBuffer(sampleBuffer, reviewState.currentFrame);
+            reviewState.animationFrameId = requestAnimationFrame(replayAnimationLoop);
+        }
+
+        function drawSampleSkeletonFromBuffer(buffer, frameIndex) {
+            replayCtx.clearRect(0, 0, replayCanvas.width, replayCanvas.height);
+            const dataPoint = buffer[frameIndex];
+            if (!dataPoint || !dataPoint.keypoints) return;
+            const keypointMap = new Map(dataPoint.keypoints.map(p => [p.name, p]));
+            const leftShoulder = keypointMap.get('left_shoulder');
+            const rightShoulder = keypointMap.get('right_shoulder');
+            if (!leftShoulder || !rightShoulder || leftShoulder.score < 0.3 || rightShoulder.score < 0.3) return;
+            const originalCenterX = (leftShoulder.x + rightShoulder.x) / 2;
+            const originalCenterY = (leftShoulder.y + rightShoulder.y) / 2;
+            const canvasCenterX = replayCanvas.width / 2;
+            const canvasCenterY = replayCanvas.height / 2;
+            const originalShoulderDist = Math.hypot(leftShoulder.x - rightShoulder.x, leftShoulder.y - rightShoulder.y) || 1;
+            const desiredShoulderDist = replayCanvas.width / 4;
+            const scale = desiredShoulderDist / originalShoulderDist;
+            const centeredKeypoints = dataPoint.keypoints.map(kp => {
+                if (kp.score < 0.3) return { ...kp, score: 0 };
+                const relativeX = kp.x - originalCenterX;
+                const relativeY = kp.y - originalCenterY;
+                return { ...kp, x: canvasCenterX + relativeX * scale, y: canvasCenterY + relativeY * scale };
+            });
+            drawKeypoints(centeredKeypoints, replayCtx);
+            drawSkeleton(centeredKeypoints, replayCtx);
+        }
+
+        function updateKeypointPlot(buffer) {
+            const datasets = [];
+            const hitTime = buffer[Math.floor(buffer.length / 2)].timestamp;
+            for (let i = 0; i < KEYPOINT_ORDER.length; i++) {
+                const kpName = KEYPOINT_ORDER[i];
+                const xData = buffer.map(d => ({ x: (d.timestamp - hitTime) / 1000, y: d.keypoints?.find(p=>p.name === kpName)?.x ?? null }));
+                const yData = buffer.map(d => ({ x: (d.timestamp - hitTime) / 1000, y: d.keypoints?.find(p=>p.name === kpName)?.y ?? null }));
+                datasets.push({ label: `${kpName} X`, data: xData, borderColor: KEYPOINT_COLORS[i], borderWidth: 1, pointRadius: 0, tension: 0.1, borderDash: [5, 5] });
+                datasets.push({ label: `${kpName} Y`, data: yData, borderColor: KEYPOINT_COLORS[i], borderWidth: 1, pointRadius: 0, tension: 0.1 });
+            }
+            keypointChart.data.datasets = datasets;
+            keypointChart.update();
+        }
+
+        function updateLabelPredictionPlot(sample) {
+            const groundTruths = Array(LABELS.length).fill(null).map(() => []);
+            const predictions = Array(LABELS.length).fill(null).map(() => []);
+            const hitTime = sample.buffer[Math.floor(sample.buffer.length / 2)].timestamp;
+
+            for(let i = 0; i < sample.buffer.length; i++){
+                const currentTime = sample.buffer[i].timestamp;
+                const isPulseActive = sample.ys !== 0 && (currentTime > hitTime - PULSE_WIDTH_MS - PULSE_START_BEFORE_HT_MS) && (currentTime <= hitTime - PULSE_START_BEFORE_HT_MS);
+                groundTruths[sample.ys].push({x: (currentTime - hitTime) / 1000, y: isPulseActive ? 1 : 0 });
+                if (sample.ys === 0) groundTruths[0][i] = {x: (currentTime - hitTime) / 1000, y: 1};
+                
+                if (state.isModelTrained) {
+                    const subBuffer = sample.buffer.slice(0, i + 1);
+                    const logits = model.predict(tf.tensor([preprocessData(subBuffer)])).dataSync();
+                    for(let j=0; j<LABELS.length; j++){
+                        predictions[j].push({x: (currentTime - hitTime) / 1000, y: logits[j]});
+                    }
+                } else {
+                     for(let j=0; j<LABELS.length; j++){
+                        predictions[j].push({x: (currentTime - hitTime) / 1000, y: j === 0 ? 1: 0});
+                    }
+                }
+            }
+            
+            labelChart.data.datasets[0].data = groundTruths[0];
+            labelChart.data.datasets[1].data = groundTruths[1];
+            labelChart.data.datasets[2].data = groundTruths[2];
+            labelChart.data.datasets[3].data = predictions[0];
+            labelChart.data.datasets[4].data = predictions[1];
+            labelChart.data.datasets[5].data = predictions[2];
+            labelChart.update();
+        }
+
+
+        // --- Charting, UI, and Drawing ---
+        function setupCharts() {
+            movementChartX = createMovementChart(movementChartCanvasX, 'X', liveCanvas.width);
+            movementChartY = createMovementChart(movementChartCanvasY, 'Y', liveCanvas.height);
+            logitChart = createLogitChart(logitChartCanvas);
+        }
+
+        function setupReviewCharts() {
+             keypointChart = new Chart(keypointPlotCanvas.getContext('2d'), { type: 'line', options: { animation: false, plugins: { legend: { display: false }, annotation: { annotations: { ht: { type: 'line', xMin: 0, xMax: 0, borderColor: 'rgb(255, 99, 132)', borderWidth: 2 } } } }, scales: { x: { type: 'linear', position: 'bottom', title: { display: true, text: 'Time relative to Hit (s)' } } } } });
+             labelChart = new Chart(labelPlotCanvas.getContext('2d'), { type: 'line', data: { datasets: [
+                {label: 'Truth: None', borderColor: 'rgba(107, 114, 128, 0.5)', borderWidth: 4, pointRadius: 0, stepped: 'before'}, 
+                {label: 'Truth: Forehand', borderColor: 'rgba(79, 70, 229, 0.5)', borderWidth: 4, pointRadius: 0, stepped: 'before'}, 
+                {label: 'Truth: Backhand', borderColor: 'rgba(124, 58, 237, 0.5)', borderWidth: 4, pointRadius: 0, stepped: 'before'},
+                {label: 'P(None)', borderColor: 'rgba(107, 114, 128, 1)', borderWidth: 2, pointRadius: 0, tension: 0.4, borderDash: [5,5]}, 
+                {label: 'P(Forehand)', borderColor: 'rgba(79, 70, 229, 1)', borderWidth: 2, pointRadius: 0, tension: 0.4, borderDash: [5,5]}, 
+                {label: 'P(Backhand)', borderColor: 'rgba(124, 58, 237, 1)', borderWidth: 2, pointRadius: 0, tension: 0.4, borderDash: [5,5]}
+             ] }, options: { scales: { x: { type: 'linear', position: 'bottom', title: {display: true, text: 'Time relative to Hit (s)'} }, y: { beginAtZero: true, max: 1 } }, plugins: { legend: {display: true} } } });
+        }
+
+        function createMovementChart(canvas, axis, max) { return new Chart(canvas.getContext('2d'), { type: 'line', data: { labels: [], datasets: [ { label: `Right Wrist ${axis}`, data: [], borderColor: 'rgba(79, 70, 229, 1)', borderWidth: 2, pointRadius: 0, tension: 0.4, spanGaps: true }, { label: `Left Wrist ${axis}`, data: [], borderColor: 'rgba(34, 197, 94, 1)', borderWidth: 2, pointRadius: 0, tension: 0.4, spanGaps: true } ] }, options: { animation: false, scales: { x: { type: 'time', time: { unit: 'second' } }, y: { beginAtZero: false, suggestedMin: 0, suggestedMax: max } }, plugins: { legend: { display: true, position: 'top' } } } }); }
+        function createLogitChart(canvas) { return new Chart(canvas.getContext('2d'), { type: 'line', data: { labels: [], datasets: [ { label: 'None', data: [], borderColor: 'rgba(107, 114, 128, 1)', borderWidth: 2, pointRadius: 0, tension: 0.4, spanGaps: true }, { label: 'Forehand', data: [], borderColor: 'rgba(79, 70, 229, 1)', borderWidth: 2, pointRadius: 0, tension: 0.4, spanGaps: true }, { label: 'Backhand', data: [], borderColor: 'rgba(124, 58, 237, 1)', borderWidth: 2, pointRadius: 0, tension: 0.4, spanGaps: true } ] }, options: { animation: false, scales: { x: { type: 'time', time: { unit: 'second' } }, y: { beginAtZero: true, suggestedMax: 1.0, ticks: { stepSize: 0.5 } } }, plugins: { legend: { display: true, position: 'top' } } } }); }
+        function getKeypointDataFromBuffer(keypointName, axis) { return state.dataBuffer.map(d => { if (!d.keypoints) return null; const kp = d.keypoints.find(p => p.name === keypointName); return (kp && kp.score > 0.3) ? kp[axis] : null; }); }
+        function updateCharts() { if (!movementChartX || !movementChartY || !logitChart) return; const posLabels = state.dataBuffer.map(d => d.timestamp); const logitLabels = state.logitBuffer.map(d => d.timestamp); movementChartX.data.labels = posLabels; movementChartX.data.datasets[0].data = smoothData(getKeypointDataFromBuffer('right_wrist', 'x'), 6); movementChartX.data.datasets[1].data = smoothData(getKeypointDataFromBuffer('left_wrist', 'x'), 6); movementChartX.options.scales.y.suggestedMax = liveCanvas.width; movementChartX.update('none'); movementChartY.data.labels = posLabels; movementChartY.data.datasets[0].data = smoothData(getKeypointDataFromBuffer('right_wrist', 'y'), 6); movementChartY.data.datasets[1].data = smoothData(getKeypointDataFromBuffer('left_wrist', 'y'), 6); movementChartY.options.scales.y.suggestedMax = liveCanvas.height; movementChartY.update('none'); logitChart.data.labels = logitLabels; logitChart.data.datasets[0].data = state.logitBuffer.map(d => d.logits ? d.logits[0] : null); logitChart.data.datasets[1].data = state.logitBuffer.map(d => d.logits ? d.logits[1] : null); logitChart.data.datasets[2].data = state.logitBuffer.map(d => d.logits ? d.logits[2] : null); logitChart.update('none'); }
+        function drawKeypoints(keypoints, ctx) { for (const keypoint of keypoints) { if (keypoint.score > 0.3) { ctx.beginPath(); ctx.arc(keypoint.x, keypoint.y, 5, 0, 2 * Math.PI); ctx.fillStyle = '#6366f1'; ctx.fill(); } } }
+        function drawSkeleton(keypoints, ctx) { const keypointMap = new Map(keypoints.map(keypoint => [keypoint.name, keypoint])); const confidenceThreshold = 0.3; const connections = [['left_shoulder', 'right_shoulder'], ['left_shoulder', 'left_elbow'], ['left_elbow', 'left_wrist'], ['right_shoulder', 'right_elbow'], ['right_elbow', 'right_wrist'], ['left_shoulder', 'left_hip'], ['right_shoulder', 'right_hip'], ['left_hip', 'right_hip']]; ctx.strokeStyle = '#8b5cf6'; ctx.lineWidth = 2; connections.forEach(([startName, endName]) => { const startPoint = keypointMap.get(startName); const endPoint = keypointMap.get(endName); if (startPoint && endPoint && startPoint.score > confidenceThreshold && endPoint.score > confidenceThreshold) { ctx.beginPath(); ctx.moveTo(startPoint.x, startPoint.y); ctx.lineTo(endPoint.x, endPoint.y); ctx.stroke(); } }); }
+        
+        // --- UI & State Toggles ---
+        function toggleAllTrainingButtons(enabled) { const buttons = [recordForehandBtn, recordBackhandBtn, recordNoneBtn, trainModelBtn, saveDataBtn, loadDataInput.parentElement]; buttons.forEach(btn => { if (enabled) { btn.classList.remove('btn-disabled'); btn.style.pointerEvents = 'auto'; } else { btn.classList.add('btn-disabled'); btn.style.pointerEvents = 'none'; } }); }
+        function toggleSequenceControls(isSequenceStarting) { stopRecordingBtn.classList.toggle('hidden', !isSequenceStarting); [recordForehandBtn, recordBackhandBtn, recordNoneBtn, trainModelBtn, saveDataBtn, loadDataInput.parentElement].forEach(el => { el.classList.toggle('hidden', isSequenceStarting); }); }
+        function toggleNoneRecording() { isRecordingNone = !isRecordingNone; if (isRecordingNone) { recordNoneBtn.innerText = 'Stop Recording'; recordNoneBtn.classList.add('btn-recording'); trainingStatus.innerText = 'Recording "No Stroke"...'; toggleAllTrainingButtons(false); recordNoneBtn.disabled = false; recordNoneBtn.style.pointerEvents = 'auto'; recordNoneBtn.classList.remove('btn-disabled'); } else { recordNoneBtn.innerText = 'Start Recording No Stroke'; recordNoneBtn.classList.remove('btn-recording'); trainingStatus.innerText = 'Ready to Record'; toggleAllTrainingButtons(true); } }
+        function smoothData(data, windowSize) { const smoothedData = []; for (let i = 0; i < data.length; i++) { if (data[i] === null) { smoothedData.push(null); continue; } const start = Math.max(0, i - windowSize + 1); const end = i + 1; const windowSlice = data.slice(start, end).filter(val => val !== null); if (windowSlice.length === 0) { smoothedData.push(null); continue; } const sum = windowSlice.reduce((acc, val) => acc + val, 0); smoothedData.push(sum / windowSlice.length); } return smoothedData; }
+        function updateSampleCounts() { forehandSamplesEl.innerText = trainingData.filter(d => d.ys === 1).length; backhandSamplesEl.innerText = trainingData.filter(d => d.ys === 2).length; noneSamplesEl.innerText = trainingData.filter(d => d.ys === 0).length; if(trainingData.length > 5) { trainModelBtn.classList.remove('btn-disabled'); } }
+        function handleSaveData() { if (trainingData.length === 0) { alert("No training data to save!"); return; } const dataStr = JSON.stringify(trainingData); const dataBlob = new Blob([dataStr], {type: "application/json"}); const url = URL.createObjectURL(dataBlob); const a = document.createElement('a'); a.href = url; a.download = 'training_data.json'; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); }
+        function handleLoadData(event) { const file = event.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (e) => { try { const data = JSON.parse(e.target.result); if (Array.isArray(data) && data.every(item => 'buffer' in item && 'ys' in item)) { trainingData = data; updateSampleCounts(); modelStatusEl.innerText = `${data.length} samples loaded. Ready to train.`; } else { alert("Invalid training data file format."); } } catch (error) { alert("Error reading or parsing training data file."); console.error(error); } }; reader.readAsText(file); }
+
+        function showSignal(text) {
+            signalText.innerText = text;
+            signalOverlay.classList.remove('hidden');
+        }
+
+        function hideSignal() {
+            signalOverlay.classList.add('hidden');
+        }
+
+        function switchToLiveView() {
+            liveTab.classList.add('bg-indigo-600', 'text-white'); liveTab.classList.remove('bg-gray-200', 'text-indigo-700');
+            reviewTab.classList.add('bg-gray-200', 'text-indigo-700'); reviewTab.classList.remove('bg-indigo-600', 'text-white');
+            liveView.classList.remove('hidden'); reviewView.classList.add('hidden');
+            if(liveVideo.srcObject) liveVideo.play(); else setupLiveView();
+        }
+
+        function switchToReviewView() {
+            if (reviewState.animationFrameId) cancelAnimationFrame(reviewState.animationFrameId);
+            if(liveVideo.srcObject) liveVideo.pause();
+            reviewTab.classList.add('bg-indigo-600', 'text-white'); reviewTab.classList.remove('bg-gray-200', 'text-indigo-700');
+            liveTab.classList.add('bg-gray-200', 'text-indigo-700'); liveTab.classList.remove('bg-indigo-600', 'text-white');
+            reviewView.classList.remove('hidden'); liveView.classList.add('hidden');
+            setupReviewView();
+        }
+
+        // --- Event Listeners ---
+        liveTab.addEventListener('click', switchToLiveView);
+        reviewTab.addEventListener('click', switchToReviewView);
+        recordForehandBtn.addEventListener('click', () => startRecordingSequence('forehand'));
+        recordBackhandBtn.addEventListener('click', () => startRecordingSequence('backhand'));
+        recordNoneBtn.addEventListener('click', toggleNoneRecording);
+        stopRecordingBtn.addEventListener('click', () => { isSequenceActive = false; });
+        trainModelBtn.addEventListener('click', trainModel);
+        saveDataBtn.addEventListener('click', handleSaveData);
+        loadDataInput.addEventListener('change', handleLoadData);
+        prevSampleBtn.addEventListener('click', () => loadSampleForReview(reviewState.currentIndex - 1));
+        nextSampleBtn.addEventListener('click', () => loadSampleForReview(reviewState.currentIndex + 1));
+        playPauseBtn.addEventListener('click', playPauseReplay);
+        deleteSampleBtn.addEventListener('click', () => {
+             if (reviewState.filteredSamples.length > 0) {
+                 confirmationModal.classList.remove('hidden');
+             }
+        });
+        cancelDeleteBtn.addEventListener('click', () => confirmationModal.classList.add('hidden'));
+        confirmDeleteBtn.addEventListener('click', () => {
+            const sampleToDelete = reviewState.filteredSamples[reviewState.currentIndex];
+            trainingData.splice(sampleToDelete.originalIndex, 1);
+            updateSampleCounts();
+            setReviewFilter(reviewState.currentFilter); // Re-filter and reload
+            confirmationModal.classList.add('hidden');
+        });
+        filterControls.addEventListener('click', (e) => {
+            if(e.target.classList.contains('filter-btn')) {
+                setReviewFilter(e.target.dataset.filter);
+            }
+        });
+        fullscreenBtn.addEventListener('click', () => {
+            if (videoWrapper.requestFullscreen) videoWrapper.requestFullscreen();
+        });
+        document.addEventListener('fullscreenchange', () => {
+            if(document.fullscreenElement === videoWrapper) {
+                liveCanvas.width = liveVideo.clientWidth;
+                liveCanvas.height = liveVideo.clientHeight;
+            } else {
+                liveCanvas.width = liveVideo.videoWidth;
+                liveCanvas.height = liveVideo.videoHeight;
+            }
+        });
+        
+        init();
+    </script>
+</body>
+</html>
